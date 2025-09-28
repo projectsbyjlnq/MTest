@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>ESP32 Control Dashboard</title>
+  <style>
+    body { font-family: Arial; margin: 20px; background-color: #f4f4f4; }
+    .unit { 
+      margin: 15px 0; 
+      padding: 20px; 
+      border: 1px solid #ccc; 
+      border-radius: 8px;
+      background-color: white;
+      box-shadow: 2px 2px 5px rgba(0,0,0,0.1);
+    }
+    h3 { color: #007bff; border-bottom: 2px solid #007bff; padding-bottom: 5px; }
+    .data-row { display: flex; justify-content: space-between; margin-bottom: 10px; }
+    .control-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-top: 15px; }
+    .toggle-btn {
+      padding: 10px 5px;
+      border: none;
+      border-radius: 5px;
+      cursor: pointer;
+      color: white;
+      font-weight: bold;
+      transition: background-color 0.2s;
+    }
+    .toggle-btn.on { background-color: #28a745; }
+    .toggle-btn.off { background-color: #dc3545; }
+    .toggle-btn.unknown { background-color: #6c757d; }
+  </style>
+</head>
+<body>
+  <h2>ESP32 Dashboard (WebSockets)</h2>
+  
+  <div id="unit1" class="unit">
+    <h3>Unit 1 - Living Area</h3>
+    <div class="data-row">
+      <p>💧 Water Usage: <span id="u1_water">0</span> L</p>
+      <p>⚡ Power Consumption: <span id="u1_power">0</span> W</p>
+    </div>
+    <h4>Appliance Control</h4>
+    <div id="u1_controls" class="control-grid">
+      </div>
+  </div>
+  
+  <div id="unit2" class="unit">
+    <h3>Unit 2 - Office/PC</h3>
+    <div class="data-row">
+      <p>💧 Water Usage: <span id="u2_water">0</span> L</p>
+      <p>⚡ Power Consumption: <span id="u2_power">0</span> W</p>
+    </div>
+    <h4>Appliance Control</h4>
+    <div id="u2_controls" class="control-grid">
+      </div>
+  </div>
+
+  <script>
+    const SERVER_IP = "192.168.8.102"; // ⚠️ Tiyakin na ito ang IP ng PC mo
+    const ws = new WebSocket(`ws://${SERVER_IP}:8080`); 
+    
+    const APPLIANCES = ["Light 1", "Light 2", "Light 3", "TV", "Aircon", "Desktop"];
+
+    ws.onopen = () => console.log("✅ Browser connected to WS server");
+    ws.onclose = () => console.log("❌ Browser disconnected from WS server");
+    ws.onerror = (err) => console.error("⚠️ WebSocket error:", err);
+
+    // Function to send control command to ESP32 via Node.js server
+    function sendControlCommand(unit_id, index, currentState) {
+        const newState = !currentState;
+        const command = {
+            cmd: "control",
+            unit: unit_id, // 'u1' or 'u2'
+            index: index, // 0 to 5
+            state: newState
+        };
+        const jsonString = JSON.stringify(command);
+        if (ws.readyState === WebSocket.OPEN) {
+            ws.send(jsonString);
+            console.log(`⬆️ Sending Command: ${jsonString}`);
+        } else {
+            console.error("WebSocket is not open.");
+        }
+    }
+    
+    // Function to generate buttons and attach event listeners
+    function generateControls(unit_id, container_id) {
+        const container = document.getElementById(container_id);
+        APPLIANCES.forEach((name, index) => {
+            const btn = document.createElement('button');
+            btn.className = 'toggle-btn unknown';
+            btn.id = `${unit_id}_btn_${index}`;
+            btn.textContent = name + " (OFF)";
+            btn.dataset.unit = unit_id;
+            btn.dataset.index = index;
+            btn.dataset.state = "false"; // Initial state
+            
+            btn.addEventListener('click', () => {
+                // Read current state from dataset and send command
+                const currentState = btn.dataset.state === "true";
+                sendControlCommand(unit_id, index, currentState);
+            });
+            container.appendChild(btn);
+        });
+    }
+
+    // Generate controls when the script loads
+    generateControls('u1', 'u1_controls');
+    generateControls('u2', 'u2_controls');
+
+    // Function to update the visual state of a button
+    function updateButtonVisual(unit_id, index, state) {
+        const btn = document.getElementById(`${unit_id}_btn_${index}`);
+        if (btn) {
+            const isON = state === true;
+            btn.textContent = APPLIANCES[index] + (isON ? " (ON)" : " (OFF)");
+            btn.className = `toggle-btn ${isON ? 'on' : 'off'}`;
+            btn.dataset.state = isON ? "true" : "false";
+        }
+    }
+
+    ws.onmessage = (event) => {
+      console.log("📩 Message received:", event.data);
+      
+      try {
+        const msg = JSON.parse(event.data);
+
+        // 1. Handle Status Update (galing sa ESP32)
+        if (msg.type === "status" && msg.data) {
+          const unitData = msg.data;
+          const unitIdPrefix = unitData.unit === "unit 1" ? "u1" : "u2";
+
+          // Update Sensor/Power Readings
+          document.getElementById(`${unitIdPrefix}_water`).textContent = unitData.water;
+          document.getElementById(`${unitIdPrefix}_power`).textContent = unitData.power;
+
+          // Update Toggles based on state array
+          if (unitData.states && Array.isArray(unitData.states)) {
+            unitData.states.forEach((state, index) => {
+                updateButtonVisual(unitIdPrefix, index, state);
+            });
+          }
+        }
+        
+        // 2. Handle State Update (galing sa ESP32 after physical button press)
+        if (msg.cmd === "update_state") {
+            const unitIdPrefix = msg.unit;
+            updateButtonVisual(unitIdPrefix, msg.index, msg.state);
+        }
+      } catch (e) {
+        console.error("⚠️ Error parsing JSON or processing message:", e, event.data);
+      }
+    };
+  </script>
+</body>
+</html>
